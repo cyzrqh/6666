@@ -1228,10 +1228,21 @@ runs:
 
         echo "apply-susfs:postprocess-source" > "$GITHUB_WORKSPACE/.build-phase"
         if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && \
-           ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
-          sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
-          if ! grep -q '^#define VMA_PAD_START(vma) ((vma)->vm_end)$' fs/proc/task_mmu.c; then
-            susfs_fail "Failed to add VMA_PAD_START fallback"
+           ! grep -qE '#include <linux/pgsize_migration\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
+          if [ -f include/linux/pgsize_migration.h ]; then
+            if grep -qxF '#include <linux/pkeys.h>' fs/proc/task_mmu.c; then
+              sed -i '/^#include <linux\/pkeys.h>$/a #include <linux/pgsize_migration.h>' fs/proc/task_mmu.c
+            else
+              sed -i '0,/^#include /s|^#include .*|#include <linux/pgsize_migration.h>\n&|' fs/proc/task_mmu.c
+            fi
+            if ! grep -qxF '#include <linux/pgsize_migration.h>' fs/proc/task_mmu.c; then
+              susfs_fail "Failed to include pgsize_migration.h for VMA_PAD_START"
+            fi
+          else
+            sed -i '/^#include "internal.h"$/a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
+            if ! grep -q '^#define VMA_PAD_START(vma) ((vma)->vm_end)$' fs/proc/task_mmu.c; then
+              susfs_fail "Failed to add VMA_PAD_START fallback"
+            fi
           fi
         fi
 
@@ -1275,7 +1286,10 @@ runs:
             ;;
           android16-6.12)
             if [ "$sublevel" -ge 58 ] && ! grep -qxF '#include <linux/dma-buf.h>' fs/exec.c; then
-              sed -i '0,/^#include /s//&\n#include <linux\/dma-buf.h>/' fs/exec.c
+              sed -i '0,/^#include /s|^#include .*|#include <linux/dma-buf.h>\n&|' fs/exec.c
+              if ! grep -qxF '#include <linux/dma-buf.h>' fs/exec.c || grep -qxF '#include ' fs/exec.c; then
+                susfs_fail "Failed to restore dma-buf include without corrupting fs/exec.c"
+              fi
             fi
             [ "$sublevel" -ge 69 ] && sed -i 's/vma_pages/vma_data_pages/g' fs/proc/task_mmu.c
             ;;
@@ -1482,14 +1496,37 @@ runs:
         cd "$COMMON_KERNEL_FOLDER"
         NTSYNC_FOLDER="$KERNEL_PATCHES_FOLDER/common/ntsync"
         GKI_KEY="${ANDROID_VER}-${KERNEL_VER}"
-        BRANCH_SUFFIX=$(basename "$OP_BRANCH")
         
         NTSYNC_PATCH=""
-        if [ "$GKI_KEY" = "android12-5.10" ] && [ "$BRANCH_SUFFIX" = "mt6895" ]; then
-          # The A15 mt6895 trees retain the same lockdep layout as their A14
-          # base.  The generic 5.10 patch expects a helper absent from these
-          # sources and leaves include/linux/lockdep.h rejected.
-          NTSYNC_PATCH="$NTSYNC_FOLDER/ntsync_compat_${GKI_KEY}_A14.patch"
+        if [ "$GKI_KEY" = "android12-5.10" ]; then
+          NTSYNC_GENERIC="$NTSYNC_FOLDER/ntsync_compat_${GKI_KEY}.patch"
+          NTSYNC_LEGACY="$NTSYNC_FOLDER/ntsync_compat_${GKI_KEY}_A14.patch"
+          if grep -qE '^[[:space:]]*#define[[:space:]]+lockdep_assert_none_held_once' include/linux/lockdep.h; then
+            NTSYNC_CANDIDATES=("$NTSYNC_GENERIC" "$NTSYNC_LEGACY")
+          else
+            NTSYNC_CANDIDATES=("$NTSYNC_LEGACY" "$NTSYNC_GENERIC")
+          fi
+
+          NTSYNC_PROBE_LOG=$(mktemp)
+          for candidate in "${NTSYNC_CANDIDATES[@]}"; do
+            [ -f "$candidate" ] || continue
+            printf 'Trying %s\n' "$(basename "$candidate")" >> "$NTSYNC_PROBE_LOG"
+            if patch -p1 --dry-run --forward < "$candidate" >> "$NTSYNC_PROBE_LOG" 2>&1; then
+              NTSYNC_PATCH="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$NTSYNC_PATCH" ]; then
+            while IFS= read -r line; do
+              printf 'NTSync compatibility probe: %s\n' "$line" >> "$GITHUB_WORKSPACE/.build-diagnostics"
+              line="${line//'%'/'%25'}"
+              echo "::error title=NTSync compatibility probe::$line"
+            done < <(tail -n 80 "$NTSYNC_PROBE_LOG")
+            rm -f "$NTSYNC_PROBE_LOG"
+            exit 1
+          fi
+          rm -f "$NTSYNC_PROBE_LOG"
         fi
         if [ -n "$NTSYNC_PATCH" ]; then
           if [ ! -f "$NTSYNC_PATCH" ]; then
