@@ -1228,18 +1228,30 @@ runs:
 
         echo "apply-susfs:postprocess-source" > "$GITHUB_WORKSPACE/.build-phase"
         if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && \
-           ! grep -qE '#include <linux/pgsize_migration\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
-          if [ -f include/linux/pgsize_migration.h ]; then
-            if grep -qxF '#include <linux/pkeys.h>' fs/proc/task_mmu.c; then
-              sed -i '/^#include <linux\/pkeys.h>$/a #include <linux/pgsize_migration.h>' fs/proc/task_mmu.c
-            else
-              sed -i '0,/^#include /s|^#include .*|#include <linux/pgsize_migration.h>\n&|' fs/proc/task_mmu.c
+           ! grep -q 'define VMA_PAD_START' fs/proc/task_mmu.c; then
+          if [ -f include/linux/pgsize_migration.h ] && [ -f mm/pgsize_migration.c ]; then
+            if ! grep -qxF '#include <linux/pgsize_migration.h>' fs/proc/task_mmu.c; then
+              if grep -qxF '#include <linux/pkeys.h>' fs/proc/task_mmu.c; then
+                sed -i '/^#include <linux\/pkeys.h>$/a #include <linux/pgsize_migration.h>' fs/proc/task_mmu.c
+              else
+                sed -i '0,/^#include /s|^#include .*|#include <linux/pgsize_migration.h>\n&|' fs/proc/task_mmu.c
+              fi
             fi
             if ! grep -qxF '#include <linux/pgsize_migration.h>' fs/proc/task_mmu.c; then
               susfs_fail "Failed to include pgsize_migration.h for VMA_PAD_START"
             fi
+
+            # Some early OnePlus 6.1 drops contain the complete page-size
+            # migration implementation but omit its object from mm/Makefile.
+            # Later vendor drops link the same source in obj-y.
+            if ! grep -qE '^[[:space:]]*[^#[:space:]][^#]*pgsize_migration\.o' mm/Makefile; then
+              printf '\nobj-y += pgsize_migration.o\n' >> mm/Makefile
+            fi
+            if ! grep -qE '^[[:space:]]*[^#[:space:]][^#]*pgsize_migration\.o' mm/Makefile; then
+              susfs_fail "Failed to link pgsize_migration.o for VMA_PAD_START"
+            fi
           else
-            sed -i '/^#include "internal.h"$/a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
+            sed -i '/^#include "internal.h"$/a #ifdef VMA_PAD_START\n#undef VMA_PAD_START\n#endif\n#define VMA_PAD_START(vma) ((vma)->vm_end)' fs/proc/task_mmu.c
             if ! grep -q '^#define VMA_PAD_START(vma) ((vma)->vm_end)$' fs/proc/task_mmu.c; then
               susfs_fail "Failed to add VMA_PAD_START fallback"
             fi
