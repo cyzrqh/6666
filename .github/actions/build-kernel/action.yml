@@ -1016,8 +1016,8 @@ runs:
         fi
         # SukiSU's own Makefile versions every flavour from the main history,
         # including the SUSFS-ready builtin branch.  Counting detached HEAD
-        # here made builtin look like 37987 while upstream correctly reports
-        # 40922 for the same checkout.
+        # here made builtin look like 37987 instead of using upstream's current
+        # main-history build number.
         VERSION_REF="main"
         if ! git rev-parse --verify --quiet "$VERSION_REF" >/dev/null; then
           VERSION_REF="origin/main"
