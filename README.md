@@ -41,13 +41,13 @@ Other feature flags can vary by device and kernel base. Check the matching JSON 
 
 ## 📱 Supported releases and configuration count
 
-This repository supports OnePlus **A14, A15 and A16** targets. The current inventory contains **158 configurations**:
+This repository supports OnePlus **A14, A15 and A16** targets. The current inventory contains **159 configurations**:
 
 | Target release | Configuration directory | Count |
 |---|---|---:|
 | **A14** | `configs/a14/` | **13** |
 | **A15** | `configs/a15/` | **74** |
-| **A16** | `configs/a16/` | **71** |
+| **A16** | `configs/a16/` | **72** |
 
 The release target, device model, kernel version and source branch must all match your phone. See [compatibility.md](compatibility.md) and the [latest release](https://github.com/cyzrqh/6666/releases/latest) before flashing.
 
@@ -114,6 +114,20 @@ The standard configuration flags are:
 These values are baked into the kernel image. The generated AK3 ZIP does not ask for volume-key choices and does not override them while flashing.
 
 > **First run:** enable **Force toolchain sync before build** (auto-on for releases) — required once to populate the toolchain cache.
+
+---
+
+## 🔄 Syncing updates from the parent repository
+
+Use the guarded manual workflow:
+
+```text
+Actions → Sync upstream NoMount → Run workflow
+```
+
+It creates a separate `sync/upstream-nomount/...` branch and pull request; it never pushes directly to `NoMount`. Ordinary A14/A15/A16 configuration conflicts are normalized back to this fork's standard KPM/SUSFS/BBG/NoMount policy. A conflict in build logic stops the sync and lists the affected files so the local compatibility and non-interactive AK3 protections are not silently overwritten.
+
+For pull-request creation, repository **Settings → Actions → General** must allow **Read and write permissions** and **Allow GitHub Actions to create and approve pull requests**.
 
 ---
 

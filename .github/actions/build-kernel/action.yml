@@ -22,7 +22,7 @@ inputs:
     type: string
     default: ""
   build_timestamp:
-    description: 'Custom kernel build timestamp shown in uname -a (e.g. "Fri Dec 5 02:05:55 UTC 2025"). Leave empty to use the current build time.'
+    description: 'Custom kernel build timestamp shown in uname -a. Leave empty to use OP_KTIMESTAMP from the device config, then current time.'
     required: false
     type: string
     default: ''
@@ -936,8 +936,14 @@ runs:
           --retry 5 --retry-delay 5 --retry-all-errors \
           "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_SETUP_REF}/kernel/setup.sh" \
           -o "$SUKISU_SETUP_SCRIPT"; then
-          echo "::error::Failed to download SukiSU setup.sh after retries"
-          exit 1
+          echo "::warning::setup.sh is unavailable at $SUKISU_SETUP_REF; falling back to main"
+          if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
+            --retry 5 --retry-delay 5 --retry-all-errors \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+            -o "$SUKISU_SETUP_SCRIPT"; then
+            echo "::error::Failed to download SukiSU setup.sh after retries"
+            exit 1
+          fi
         fi
 
         SCRIPT_SIZE="$(stat -c%s "$SUKISU_SETUP_SCRIPT")"
@@ -1352,6 +1358,7 @@ runs:
         bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" record-version
         bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" hook
         bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" ghost
+        bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" pathhide
 
     - name: Add BBG
       if: ${{ env.OP_BBG == 'true' }}
@@ -1368,17 +1375,6 @@ runs:
         sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' common/security/Kconfig
 
         echo "✅ BBG LSM added"
-        echo "::endgroup::"
-
-    - name: Apply KSU Hooks
-      shell: bash
-      if: ${{ env.NEED_HOOKS == 'true' }}
-      run: |
-        set -euo pipefail
-        echo "::group::Apply KSU hooks"
-        cd "$COMMON_KERNEL_FOLDER"
-        patch -p1 < "$KERNEL_PATCHES_FOLDER/next/scope_min_manual_hooks_v1.4.patch"
-        echo "✅ KSU hooks applied"
         echo "::endgroup::"
 
     - name: Apply Other Patches
@@ -1670,8 +1666,8 @@ runs:
 
         if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
           echo "proc_dou8vec_minmax() missing from this tree - applying sysctl backports"
-          for p in sysctl_add_proc_dou8vec_minmax.patch \
-                   sysctl_fix_data-races_in_proc_dou8vec_minmax.patch; do
+          for p in sysctl_add_proc_dou8vec_minmax_pre_5_13.patch \
+                   sysctl_fix_data-races_in_proc_dou8vec_minmax_pre_5_13.patch; do
             if [ ! -f "$BBR3_DIR/$p" ]; then
               echo "::error::BBRv3 needs $p but it is missing from $BBR3_DIR"
               echo "Without it, $ANDROID_VER-$KERNEL_VER cannot compile BBRv3."
@@ -1923,11 +1919,15 @@ runs:
           KERNEL_VERSION="${{ env.KERNEL_VER }}"
           MIN_VERSION="5.16"
           if [ "$(printf '%s\n' "$KERNEL_VERSION" "$MIN_VERSION" | sort -V | head -n1)" = "$KERNEL_VERSION" ]; then
-            DEBLOAT_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/experimental/0001-Support-conditional-vendor-modules-blacklisting-5.15-and-below.patch"
+            DEBLOAT_PATCH="$BOUTEILLE_KERNEL_PATCHES_FOLDER/experimental/0001-Support-conditional-vendor-modules-blacklisting-5.15-and-below.patch"
           else
-            DEBLOAT_PATCH_URL="https://raw.githubusercontent.com/Bouteillepleine/kernel_patches/main/experimental/0001-Support-conditional-vendor-modules-blacklisting-6.1-and-above.patch"
+            DEBLOAT_PATCH="$BOUTEILLE_KERNEL_PATCHES_FOLDER/experimental/0001-Support-conditional-vendor-modules-blacklisting-6.1-and-above.patch"
           fi
-          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 15 "$DEBLOAT_PATCH_URL" | patch -p1
+          if [ ! -f "$DEBLOAT_PATCH" ]; then
+            echo "::error::Vendor-module debloat patch not found: $DEBLOAT_PATCH"
+            exit 1
+          fi
+          patch -p1 < "$DEBLOAT_PATCH"
         fi
 
     - name: 🔧 Add ADIOS I/O Scheduler
@@ -2029,7 +2029,6 @@ runs:
       shell: bash
       env:
         PYTHONWARNINGS: "ignore:invalid escape sequence"
-        CCACHE_EXTRAFILES: "$COMMON_KERNEL_FOLDER/out/kernel/config_data.gz"
       run: |
         set -euo pipefail
         echo "compile-kernel" > "$GITHUB_WORKSPACE/.build-phase"
@@ -2074,6 +2073,9 @@ runs:
         if [ -n "${{ inputs.build_timestamp }}" ]; then
           export KBUILD_BUILD_TIMESTAMP="${{ inputs.build_timestamp }}"
           echo "📅 Using custom build timestamp: $KBUILD_BUILD_TIMESTAMP"
+        elif [ -n "${OP_KTIMESTAMP:-}" ]; then
+          export KBUILD_BUILD_TIMESTAMP="$OP_KTIMESTAMP"
+          echo "📅 Using this model's stock kernel timestamp: $KBUILD_BUILD_TIMESTAMP"
         else
           export KBUILD_BUILD_TIMESTAMP="$KERNEL_BUILD_DATE"
           echo "📅 Using current UTC build timestamp: $KBUILD_BUILD_TIMESTAMP"
@@ -2139,7 +2141,12 @@ runs:
         
         case "$OP_BRANCH" in
           wild/sm8750|wild/sm8850|wild/sm8845)
-            KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+            if echo 'int main(void){return 0;}' | clang -mcpu=oryon-1 --target=aarch64-linux-gnu -fsyntax-only -x c - >/dev/null 2>&1; then
+              KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+              echo "🧠 -mcpu=oryon-1 enabled for $OP_BRANCH"
+            else
+              echo "::warning::$CLANG_VERSION does not accept -mcpu=oryon-1; building $OP_BRANCH generic"
+            fi
             ;;
         esac
         

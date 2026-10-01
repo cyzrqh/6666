@@ -1,0 +1,394 @@
+name: Sync upstream NoMount
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-nomount
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: NoMount
+  UPSTREAM_REPOSITORY: Bouteillepleine/OnePlus-SukiSu_NMS
+
+jobs:
+  sync:
+    name: Merge upstream into a pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the protected base
+        uses: actions/checkout@v6
+        with:
+          ref: NoMount
+          fetch-depth: 0
+
+      - name: Pin inputs and preserve the trusted policy
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin \
+            "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          base_sha="$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")"
+          if [ "$(git rev-parse HEAD)" != "$base_sha" ]; then
+            echo "::error::Checkout is not the current origin/${BASE_BRANCH}"
+            exit 1
+          fi
+
+          policy_source=.github/scripts/enforce_local_policy.py
+          trusted_policy="$RUNNER_TEMP/enforce_local_policy.py"
+          if ! git ls-files --error-unmatch "$policy_source" >/dev/null 2>&1; then
+            echo "::error::Trusted local policy is not tracked on ${BASE_BRANCH}: $policy_source"
+            exit 1
+          fi
+          cp -- "$policy_source" "$trusted_policy"
+          policy_sha="$(sha256sum "$trusted_policy" | awk '{print $1}')"
+
+          git remote add upstream \
+            "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream \
+            "refs/heads/${BASE_BRANCH}:refs/remotes/upstream/${BASE_BRANCH}"
+          upstream_sha="$(git rev-parse "refs/remotes/upstream/${BASE_BRANCH}^{commit}")"
+
+          # Both immutable inputs are part of the name, so repeated runs select
+          # exactly the same branch without rewriting it.
+          sync_branch="sync/upstream-nomount/${base_sha}/${upstream_sha}"
+
+          {
+            echo "base_sha=$base_sha"
+            echo "upstream_sha=$upstream_sha"
+            echo "sync_branch=$sync_branch"
+            echo "trusted_policy=$trusted_policy"
+            echo "policy_sha=$policy_sha"
+          } >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" "$base_sha"; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            echo "origin/${BASE_BRANCH} already contains upstream ${BASE_BRANCH} at $upstream_sha"
+          else
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream with the conflict allowlist
+        if: steps.refs.outputs.needs_sync == 'true'
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
+          TRUSTED_POLICY: ${{ steps.refs.outputs.trusted_policy }}
+          POLICY_SHA: ${{ steps.refs.outputs.policy_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$SYNC_BRANCH" "$BASE_SHA"
+
+          set +e
+          git merge --no-ff --no-commit "$UPSTREAM_SHA"
+          merge_status=$?
+          set -e
+
+          mapfile -d '' conflicts < <(
+            git diff --name-only --diff-filter=U -z
+          )
+
+          if [ "$merge_status" -ne 0 ] && [ "${#conflicts[@]}" -eq 0 ]; then
+            git merge --abort || true
+            echo "::error::Upstream merge failed without resolvable file conflicts"
+            exit 1
+          fi
+
+          disallowed=()
+          for path in "${conflicts[@]}"; do
+            if [[ ! "$path" =~ ^configs/a(14|15|16)/[^/]+\.json$ ]]; then
+              disallowed+=("$path")
+            fi
+          done
+          if [ "${#disallowed[@]}" -ne 0 ]; then
+            printf 'Disallowed merge conflict: %s\n' "${disallowed[@]}" >&2
+            git merge --abort || true
+            echo "::error::Only configs/a14, configs/a15, and configs/a16 JSON conflicts may be resolved automatically; nothing was pushed"
+            exit 1
+          fi
+
+          for path in "${conflicts[@]}"; do
+            # Stage 3 is upstream (theirs). An absent stage 3 means upstream
+            # deleted the file, so taking theirs means retaining that deletion.
+            if git cat-file -e ":3:$path" 2>/dev/null; then
+              git checkout --theirs -- "$path"
+              git add -- "$path"
+            else
+              git rm -- "$path"
+            fi
+          done
+
+          # Never execute the copy that the upstream merge can modify.
+          echo "$POLICY_SHA  $TRUSTED_POLICY" | sha256sum --check --status
+          python3 "$TRUSTED_POLICY" --root "$GITHUB_WORKSPACE"
+          python3 "$TRUSTED_POLICY" --check --root "$GITHUB_WORKSPACE"
+          git add -- configs/a14 configs/a15 configs/a16
+
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "::error::Unresolved conflicts remain after applying the allowlist"
+            exit 1
+          fi
+          if ! cmp --silent "$TRUSTED_POLICY" .github/scripts/enforce_local_policy.py; then
+            echo "::error::The merge changed the fork's trusted policy script"
+            exit 1
+          fi
+
+      - name: Validate merged files and local compatibility contracts
+        if: steps.refs.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          root = Path.cwd()
+          errors = []
+          policy = {"susfs": True, "kpm": True, "NMS": False, "bbg": False}
+          required_fields = (
+              "model",
+              "soc",
+              "branch",
+              "manifest",
+              "android_version",
+              "kernel_version",
+              "os_version",
+          )
+          seen_os_models = set()
+
+          for api in (14, 15, 16):
+              config_dir = root / "configs" / f"a{api}"
+              manifest_dir = root / "manifests" / f"a{api}"
+              configs = sorted(config_dir.glob("*.json"))
+              if not configs:
+                  errors.append(f"{config_dir.relative_to(root)} has no JSON configurations")
+              for path in configs:
+                  if path.is_symlink() or not path.is_file():
+                      errors.append(f"configuration is not a regular file: {path.relative_to(root)}")
+                      continue
+                  try:
+                      data = json.loads(path.read_text(encoding="utf-8"))
+                  except Exception as exc:
+                      errors.append(f"invalid JSON {path.relative_to(root)}: {exc}")
+                      continue
+                  if not isinstance(data, dict):
+                      errors.append(f"configuration is not an object: {path.relative_to(root)}")
+                      continue
+                  for field in required_fields:
+                      value = data.get(field)
+                      if not isinstance(value, str) or not value.strip():
+                          errors.append(f"{path.relative_to(root)}: {field} must be a non-empty string")
+                  expected_os = f"A{api}"
+                  if data.get("os_version") != expected_os:
+                      errors.append(f"{path.relative_to(root)}: os_version must be {expected_os}")
+                  if data.get("model") != path.stem:
+                      errors.append(f"{path.relative_to(root)}: model must be {path.stem}")
+                  identity = (data.get("os_version"), data.get("model"))
+                  if identity in seen_os_models:
+                      errors.append(f"{path.relative_to(root)}: duplicate os_version/model pair {identity!r}")
+                  else:
+                      seen_os_models.add(identity)
+                  manifest = data.get("manifest")
+                  if not isinstance(manifest, str) or not manifest or Path(manifest).name != manifest or not manifest.endswith(".xml"):
+                      errors.append(f"{path.relative_to(root)}: manifest must be a local XML filename")
+                  else:
+                      manifest_path = manifest_dir / manifest
+                      if manifest_path.is_symlink() or not manifest_path.is_file():
+                          errors.append(f"{path.relative_to(root)}: missing regular manifest {manifest_path.relative_to(root)}")
+                  for key, expected in policy.items():
+                      if data.get(key) is not expected:
+                          errors.append(f"{path.relative_to(root)}: {key} must be {expected!r}")
+
+          xml_paths = sorted((root / "manifests").glob("a1[456]/*.xml"))
+          if not xml_paths:
+              errors.append("no A14/A15/A16 XML manifests found")
+          for path in xml_paths:
+              if path.is_symlink() or not path.is_file():
+                  errors.append(f"manifest is not a regular file: {path.relative_to(root)}")
+                  continue
+              try:
+                  document = ET.parse(path)
+                  if document.getroot().tag != "manifest":
+                      errors.append(f"{path.relative_to(root)}: XML root must be <manifest>")
+              except Exception as exc:
+                  errors.append(f"invalid XML {path.relative_to(root)}: {exc}")
+
+          action_path = root / ".github/actions/build-kernel/action.yml"
+          workflow_path = root / ".github/workflows/build-kernel-release.yml"
+          try:
+              action = action_path.read_text(encoding="utf-8")
+              build_workflow = workflow_path.read_text(encoding="utf-8")
+          except Exception as exc:
+              errors.append(f"cannot read build definitions: {exc}")
+              action = build_workflow = ""
+
+          required_action_markers = (
+              "lockdep_assert_none_held_once",
+              "obj-y += pgsize_migration.o",
+              "Failed to restore dma-buf include without corrupting fs/exec.c",
+              "sukisu-6.12-compat.patch",
+              r"keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent",
+              "refusing to package an interactive installer",
+          )
+          for marker in required_action_markers:
+              if marker not in action:
+                  errors.append(f"missing local build compatibility marker: {marker}")
+          if "A14+15+16" not in build_workflow:
+              errors.append("build workflow no longer exposes the A14+15+16 target")
+
+          step_marker = "- name: Create Kernel ZIP"
+          volume_marker = r"keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent"
+          refusal_marker = "refusing to package an interactive installer"
+          try:
+              step_at = action.index(step_marker)
+              volume_at = action.index(volume_marker, step_at)
+              refusal_at = action.index(refusal_marker, volume_at)
+              exit_at = action.index("exit 1", refusal_at)
+              zip_at = action.index("zip -r9", step_at)
+              if not step_at < volume_at < refusal_at < exit_at < zip_at:
+                  errors.append("AK3 volume-key rejection is not before ZIP creation")
+          except ValueError:
+              errors.append("cannot prove that AK3 volume-key rejection precedes ZIP creation")
+
+          patch_path = root / ".github/actions/build-kernel/patches/sukisu-6.12-compat.patch"
+          if not patch_path.is_file() or patch_path.stat().st_size == 0:
+              errors.append("SukiSU 6.12 compatibility patch is missing or empty")
+
+          if errors:
+              for error in errors:
+                  print(f"::error::{error}")
+              sys.exit(1)
+          print(f"validated {sum(1 for _ in (root / 'configs').glob('a1[456]/*.json'))} configs and {len(xml_paths)} manifests")
+          PY
+
+          git diff --cached --check
+          if ! git rev-parse --verify --quiet MERGE_HEAD >/dev/null; then
+            echo "::error::Expected an uncommitted merge before creating the sync commit"
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain --untracked-files=normal | sed -n '/^??/p')" ]; then
+            echo "::error::Unexpected untracked files appeared during synchronization"
+            exit 1
+          fi
+
+      - name: Commit and publish the sync branch
+        if: steps.refs.outputs.needs_sync == 'true'
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git commit -m "sync: upstream NoMount ${UPSTREAM_SHA:0:12}"
+
+          # Refuse a stale-base run before publishing anything.
+          git fetch --no-tags origin \
+            "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          current_base="$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")"
+          if [ "$current_base" != "$BASE_SHA" ]; then
+            echo "::error::origin/${BASE_BRANCH} changed during this run; rerun against the new base"
+            exit 1
+          fi
+
+          remote_line="$(git ls-remote --heads origin "refs/heads/$SYNC_BRANCH")"
+          if [ -n "$remote_line" ]; then
+            git fetch --no-tags origin \
+              "refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH"
+            remote_ref="refs/remotes/origin/$SYNC_BRANCH"
+            if ! git merge-base --is-ancestor "$BASE_SHA" "$remote_ref" || \
+               ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$remote_ref"; then
+              echo "::error::Existing deterministic sync branch has unexpected ancestry"
+              exit 1
+            fi
+            if ! git diff --quiet "$remote_ref" HEAD; then
+              echo "::error::Existing deterministic sync branch has unexpected content"
+              exit 1
+            fi
+            echo "Equivalent sync branch already exists; leaving it unchanged"
+          else
+            git push --set-upstream origin "HEAD:refs/heads/$SYNC_BRANCH"
+          fi
+
+      - name: Create or reuse the pull request
+        if: steps.refs.outputs.needs_sync == 'true'
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Recheck the protected branch after publishing the separate sync ref.
+          git fetch --no-tags origin \
+            "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+          if [ "$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")" != "$BASE_SHA" ]; then
+            echo "::error::origin/${BASE_BRANCH} changed before PR creation; rerun to build a fresh deterministic branch"
+            exit 1
+          fi
+
+          pr_url="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base "$BASE_BRANCH" \
+            --head "$SYNC_BRANCH" \
+            --json url \
+            --jq '.[0].url // empty')"
+
+          if [ -z "$pr_url" ]; then
+            body="$(printf '%s\n' \
+              "Automated merge of \`${UPSTREAM_REPOSITORY}:${BASE_BRANCH}\`." \
+              "" \
+              "- Base: \`${BASE_SHA}\`" \
+              "- Upstream: \`${UPSTREAM_SHA}\`" \
+              "- Local A14/A15/A16 policy and compatibility contracts were checked before publishing.")"
+            if ! pr_url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "$BASE_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "sync: upstream NoMount ${UPSTREAM_SHA:0:12}" \
+              --body "$body")"; then
+              # A concurrent/manual creator may have won the race.
+              pr_url="$(gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --state open \
+                --base "$BASE_BRANCH" \
+                --head "$SYNC_BRANCH" \
+                --json url \
+                --jq '.[0].url // empty')"
+              if [ -z "$pr_url" ]; then
+                message="Pull request creation failed. In Settings → Actions → General, enable Read and write permissions and Allow GitHub Actions to create and approve pull requests."
+                echo "::error::$message"
+                printf '### Upstream sync failed\n\n%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "Pull request: $pr_url"
+          printf '### Upstream sync\n\n%s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report an already synchronized base
+        if: steps.refs.outputs.needs_sync == 'false'
+        env:
+          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          printf '### Upstream sync\n\n`%s` already contains upstream `%s`.\n' \
+            "$BASE_BRANCH" "$UPSTREAM_SHA" >> "$GITHUB_STEP_SUMMARY"

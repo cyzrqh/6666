@@ -1,8 +1,8 @@
 {
-  "model": "OP15r",
+  "model": "OP15-6.12.58",
   "soc": "canoe",
-  "branch": "wild/sm8845",
-  "manifest": "oneplus_15r_w.xml",
+  "branch": "wild/sm8850",
+  "manifest": "oneplus_15_6.12.58_oplus_w.xml",
   "android_version": "android16",
   "kernel_version": "6.12",
   "os_version": "A16",
@@ -17,9 +17,9 @@
   "susfs": true,
   "kpm": true,
   "NMS": false,
+  "bbg": false,
   "opt": false,
   "ds": false,
-  "bbg": false,
   "bbr": true,
   "bbr3": true,
   "ttl": true,
@@ -27,6 +27,6 @@
   "unicode": true,
   "ntsync": false,
   "blacklist_modules": "oplus_secure_guard_new",
-  "uname": "5-g844001fb8721-ab14552068-4k",
-  "ktimestamp": "Fri Dec  5 02:15:49 UTC 2025"
+  "uname": "6-g925a103d123c-ab15898589-4k",
+  "ktimestamp": "Mon Jul 20 17:37:05 UTC 2026"
 }
