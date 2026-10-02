@@ -2508,13 +2508,42 @@ runs:
         cd "$AK3_FOLDER"
         
         sed -i 's/do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
+
+        # Some upstream AK3 branches ask for a volume-key decision when Magisk
+        # residue is detected.  Remove only that known prompt and fail closed if
+        # upstream changes its layout.  The non-interactive answer is "No": the
+        # installer exits before writing the boot image instead of continuing.
+        python3 "$GITHUB_ACTION_PATH/../../scripts/sanitize_anykernel.py" "$PWD"
         
         # Packaging contract: flashing must be non-interactive.  The volume-key
         # helpers live in tools/ak3-core.sh in newer AK3 revisions, so audit the
         # whole installer instead of checking only anykernel.sh.
-        if grep -ERq --include='*.sh' \
-          'keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent' \
-          anykernel.sh tools; then
+        AK3_UPDATE_BINARY="META-INF/com/google/android/update-binary"
+        AK3_VOLUME_PATTERN='keycheck\.timeout|handle_input|KEY_RESULT|KEY_VOLUME(UP|DOWN)?|find_volume_nodes|VOLUME_DEVS|getevent|/dev/input/event'
+        bash -n anykernel.sh tools/ak3-core.sh
+        [ ! -f "$AK3_UPDATE_BINARY" ] || bash -n "$AK3_UPDATE_BINARY"
+        AK3_INTERACTIVE=0
+        if grep -ERq --include='*.sh' "$AK3_VOLUME_PATTERN" anykernel.sh tools; then
+          AK3_INTERACTIVE=1
+        else
+          scan_status=$?
+          if [ "$scan_status" -ne 1 ]; then
+            echo "::error::Failed to audit AnyKernel3 installer scripts (grep status $scan_status)"
+            exit 1
+          fi
+        fi
+        if [ -f "$AK3_UPDATE_BINARY" ]; then
+          if grep -Eq "$AK3_VOLUME_PATTERN" "$AK3_UPDATE_BINARY"; then
+            AK3_INTERACTIVE=1
+          else
+            scan_status=$?
+            if [ "$scan_status" -ne 1 ]; then
+              echo "::error::Failed to audit AnyKernel3 update-binary (grep status $scan_status)"
+              exit 1
+            fi
+          fi
+        fi
+        if [ "$AK3_INTERACTIVE" -ne 0 ]; then
           echo "::error::AnyKernel3 contains volume-key input code; refusing to package an interactive installer"
           exit 1
         fi

@@ -29,7 +29,7 @@ jobs:
           ref: NoMount
           fetch-depth: 0
 
-      - name: Pin inputs and preserve the trusted policy
+      - name: Pin inputs and preserve trusted local scripts
         id: refs
         shell: bash
         run: |
@@ -52,6 +52,15 @@ jobs:
           cp -- "$policy_source" "$trusted_policy"
           policy_sha="$(sha256sum "$trusted_policy" | awk '{print $1}')"
 
+          sanitizer_source=.github/scripts/sanitize_anykernel.py
+          trusted_sanitizer="$RUNNER_TEMP/sanitize_anykernel.py"
+          if ! git ls-files --error-unmatch "$sanitizer_source" >/dev/null 2>&1; then
+            echo "::error::Trusted AK3 sanitizer is not tracked on ${BASE_BRANCH}: $sanitizer_source"
+            exit 1
+          fi
+          cp -- "$sanitizer_source" "$trusted_sanitizer"
+          sanitizer_sha="$(sha256sum "$trusted_sanitizer" | awk '{print $1}')"
+
           git remote add upstream \
             "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --no-tags upstream \
@@ -68,6 +77,8 @@ jobs:
             echo "sync_branch=$sync_branch"
             echo "trusted_policy=$trusted_policy"
             echo "policy_sha=$policy_sha"
+            echo "trusted_sanitizer=$trusted_sanitizer"
+            echo "sanitizer_sha=$sanitizer_sha"
           } >> "$GITHUB_OUTPUT"
 
           if git merge-base --is-ancestor "$upstream_sha" "$base_sha"; then
@@ -85,6 +96,8 @@ jobs:
           SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
           TRUSTED_POLICY: ${{ steps.refs.outputs.trusted_policy }}
           POLICY_SHA: ${{ steps.refs.outputs.policy_sha }}
+          TRUSTED_SANITIZER: ${{ steps.refs.outputs.trusted_sanitizer }}
+          SANITIZER_SHA: ${{ steps.refs.outputs.sanitizer_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -133,6 +146,7 @@ jobs:
 
           # Never execute the copy that the upstream merge can modify.
           echo "$POLICY_SHA  $TRUSTED_POLICY" | sha256sum --check --status
+          echo "$SANITIZER_SHA  $TRUSTED_SANITIZER" | sha256sum --check --status
           python3 "$TRUSTED_POLICY" --root "$GITHUB_WORKSPACE"
           python3 "$TRUSTED_POLICY" --check --root "$GITHUB_WORKSPACE"
           git add -- configs/a14 configs/a15 configs/a16
@@ -143,6 +157,10 @@ jobs:
           fi
           if ! cmp --silent "$TRUSTED_POLICY" .github/scripts/enforce_local_policy.py; then
             echo "::error::The merge changed the fork's trusted policy script"
+            exit 1
+          fi
+          if ! cmp --silent "$TRUSTED_SANITIZER" .github/scripts/sanitize_anykernel.py; then
+            echo "::error::The merge changed the fork's trusted AK3 sanitizer"
             exit 1
           fi
 
@@ -242,7 +260,10 @@ jobs:
               "obj-y += pgsize_migration.o",
               "Failed to restore dma-buf include without corrupting fs/exec.c",
               "sukisu-6.12-compat.patch",
-              r"keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent",
+              "sanitize_anykernel.py",
+              r"keycheck\.timeout|handle_input|KEY_RESULT|KEY_VOLUME(UP|DOWN)?|find_volume_nodes|VOLUME_DEVS|getevent|/dev/input/event",
+              "Failed to audit AnyKernel3 installer scripts",
+              "Failed to audit AnyKernel3 update-binary",
               "refusing to package an interactive installer",
           )
           for marker in required_action_markers:
@@ -252,22 +273,43 @@ jobs:
               errors.append("build workflow no longer exposes the A14+15+16 target")
 
           step_marker = "- name: Create Kernel ZIP"
-          volume_marker = r"keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent"
+          sanitizer_call = 'python3 "$GITHUB_ACTION_PATH/../../scripts/sanitize_anykernel.py" "$PWD"'
+          syntax_marker = "bash -n anykernel.sh tools/ak3-core.sh"
+          volume_marker = r"keycheck\.timeout|handle_input|KEY_RESULT|KEY_VOLUME(UP|DOWN)?|find_volume_nodes|VOLUME_DEVS|getevent|/dev/input/event"
           refusal_marker = "refusing to package an interactive installer"
           try:
               step_at = action.index(step_marker)
+              sanitizer_at = action.index(sanitizer_call, step_at)
+              syntax_at = action.index(syntax_marker, sanitizer_at)
               volume_at = action.index(volume_marker, step_at)
               refusal_at = action.index(refusal_marker, volume_at)
               exit_at = action.index("exit 1", refusal_at)
               zip_at = action.index("zip -r9", step_at)
-              if not step_at < volume_at < refusal_at < exit_at < zip_at:
-                  errors.append("AK3 volume-key rejection is not before ZIP creation")
+              if not (
+                  step_at
+                  < sanitizer_at
+                  < syntax_at
+                  < volume_at
+                  < refusal_at
+                  < exit_at
+                  < zip_at
+              ):
+                  errors.append(
+                      "AK3 sanitizer, syntax check, and volume-key rejection "
+                      "are not ordered before ZIP creation"
+                  )
           except ValueError:
-              errors.append("cannot prove that AK3 volume-key rejection precedes ZIP creation")
+              errors.append(
+                  "cannot prove that AK3 sanitizer and safety checks precede ZIP creation"
+              )
 
           patch_path = root / ".github/actions/build-kernel/patches/sukisu-6.12-compat.patch"
           if not patch_path.is_file() or patch_path.stat().st_size == 0:
               errors.append("SukiSU 6.12 compatibility patch is missing or empty")
+
+          sanitizer_path = root / ".github/scripts/sanitize_anykernel.py"
+          if not sanitizer_path.is_file() or sanitizer_path.stat().st_size == 0:
+              errors.append("AnyKernel3 non-interactive sanitizer is missing or empty")
 
           if errors:
               for error in errors:
