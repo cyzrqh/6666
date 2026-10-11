@@ -125,11 +125,11 @@ Use the guarded manual workflow:
 Actions → Sync upstream NoMount → Run workflow
 ```
 
-After the run succeeds, open the pull request shown in its summary, review the checks, and merge it. The workflow never pushes upstream changes directly to `NoMount`.
+After the run succeeds, open the pull request shown in its summary, review the checks, and merge it. If repository policy blocks automatic pull-request creation, the same summary shows a **Create the pull request** link; open it and select **Create pull request**. The workflow never pushes upstream changes directly to `NoMount`.
 
 Ordinary A14/A15/A16 configuration conflicts are normalized back to this fork's standard KPM/SUSFS/BBG/NoMount policy. Known overlaps in the build workflow and README keep this fork's reviewed behavior while accepting upstream-only additions. Any conflict outside that narrow allowlist stops the sync and lists the affected files, so local compatibility and non-interactive AK3 protections are not silently overwritten.
 
-For pull-request creation, repository **Settings → Actions → General** must allow **Read and write permissions** and **Allow GitHub Actions to create and approve pull requests**.
+Optionally, a repository owner can enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** to remove that final click. The safer default works without changing this repository-wide permission.
 
 ---
 

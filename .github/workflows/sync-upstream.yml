@@ -510,10 +510,12 @@ jobs:
                 --json url \
                 --jq '.[0].url // empty')"
               if [ -z "$pr_url" ]; then
-                message="Pull request creation failed. In Settings → Actions → General, enable Read and write permissions and Allow GitHub Actions to create and approve pull requests."
-                echo "::error::$message"
-                printf '### Upstream sync failed\n\n%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"
-                exit 1
+                compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${SYNC_BRANCH}?expand=1"
+                message="The synchronized branch is ready, but repository policy blocked automatic pull-request creation. Open the link in the job summary and select Create pull request."
+                echo "::warning::$message"
+                printf '### Upstream sync branch ready\n\n%s\n\n[Create the pull request](%s)\n' \
+                  "$message" "$compare_url" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
               fi
             fi
           fi
