@@ -61,6 +61,24 @@ jobs:
           cp -- "$sanitizer_source" "$trusted_sanitizer"
           sanitizer_sha="$(sha256sum "$trusted_sanitizer" | awk '{print $1}')"
 
+          resolver_source=.github/scripts/resolve_sync_conflict.py
+          trusted_resolver="$RUNNER_TEMP/resolve_sync_conflict.py"
+          if ! git ls-files --error-unmatch "$resolver_source" >/dev/null 2>&1; then
+            echo "::error::Trusted conflict resolver is not tracked on ${BASE_BRANCH}: $resolver_source"
+            exit 1
+          fi
+          cp -- "$resolver_source" "$trusted_resolver"
+          resolver_sha="$(sha256sum "$trusted_resolver" | awk '{print $1}')"
+
+          validator_source=.github/scripts/validate_configs.py
+          trusted_validator="$RUNNER_TEMP/validate_configs.py"
+          if ! git ls-files --error-unmatch "$validator_source" >/dev/null 2>&1; then
+            echo "::error::Trusted config validator is not tracked on ${BASE_BRANCH}: $validator_source"
+            exit 1
+          fi
+          cp -- "$validator_source" "$trusted_validator"
+          validator_sha="$(sha256sum "$trusted_validator" | awk '{print $1}')"
+
           git remote add upstream \
             "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --no-tags upstream \
@@ -79,6 +97,10 @@ jobs:
             echo "policy_sha=$policy_sha"
             echo "trusted_sanitizer=$trusted_sanitizer"
             echo "sanitizer_sha=$sanitizer_sha"
+            echo "trusted_resolver=$trusted_resolver"
+            echo "resolver_sha=$resolver_sha"
+            echo "trusted_validator=$trusted_validator"
+            echo "validator_sha=$validator_sha"
           } >> "$GITHUB_OUTPUT"
 
           if git merge-base --is-ancestor "$upstream_sha" "$base_sha"; then
@@ -98,6 +120,10 @@ jobs:
           POLICY_SHA: ${{ steps.refs.outputs.policy_sha }}
           TRUSTED_SANITIZER: ${{ steps.refs.outputs.trusted_sanitizer }}
           SANITIZER_SHA: ${{ steps.refs.outputs.sanitizer_sha }}
+          TRUSTED_RESOLVER: ${{ steps.refs.outputs.trusted_resolver }}
+          RESOLVER_SHA: ${{ steps.refs.outputs.resolver_sha }}
+          TRUSTED_VALIDATOR: ${{ steps.refs.outputs.trusted_validator }}
+          VALIDATOR_SHA: ${{ steps.refs.outputs.validator_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -122,25 +148,44 @@ jobs:
 
           disallowed=()
           for path in "${conflicts[@]}"; do
-            if [[ ! "$path" =~ ^configs/a(14|15|16)/[^/]+\.json$ ]]; then
+            if [[ "$path" =~ ^configs/a(14|15|16)/[^/]+\.json$ ]] || \
+               [ "$path" = ".github/workflows/build-kernel-release.yml" ] || \
+               [ "$path" = ".github/scripts/validate_configs.py" ] || \
+               [ "$path" = "README.md" ]; then
+              continue
+            else
               disallowed+=("$path")
             fi
           done
           if [ "${#disallowed[@]}" -ne 0 ]; then
             printf 'Disallowed merge conflict: %s\n' "${disallowed[@]}" >&2
             git merge --abort || true
-            echo "::error::Only configs/a14, configs/a15, and configs/a16 JSON conflicts may be resolved automatically; nothing was pushed"
+            echo "::error::The merge contains a conflict outside the reviewed config/build-workflow/README allowlist; nothing was pushed"
             exit 1
           fi
 
+          echo "$RESOLVER_SHA  $TRUSTED_RESOLVER" | sha256sum --check --status
+          echo "$VALIDATOR_SHA  $TRUSTED_VALIDATOR" | sha256sum --check --status
           for path in "${conflicts[@]}"; do
-            # Stage 3 is upstream (theirs). An absent stage 3 means upstream
-            # deleted the file, so taking theirs means retaining that deletion.
-            if git cat-file -e ":3:$path" 2>/dev/null; then
-              git checkout --theirs -- "$path"
+            if [[ "$path" =~ ^configs/a(14|15|16)/[^/]+\.json$ ]]; then
+              # Stage 3 is upstream (theirs). An absent stage 3 means upstream
+              # deleted the file, so taking theirs means retaining that deletion.
+              if git cat-file -e ":3:$path" 2>/dev/null; then
+                git checkout --theirs -- "$path"
+                git add -- "$path"
+              else
+                git rm -- "$path"
+              fi
+            elif [ "$path" = ".github/scripts/validate_configs.py" ]; then
+              rm -f -- "$path"
+              cp -- "$TRUSTED_VALIDATOR" "$path"
               git add -- "$path"
             else
-              git rm -- "$path"
+              # Regenerate diff3 markers so the trusted resolver can tell a true
+              # upstream addition from a local deletion that upstream modified.
+              git checkout --conflict=diff3 -- "$path"
+              python3 "$TRUSTED_RESOLVER" --root "$GITHUB_WORKSPACE" "$path"
+              git add -- "$path"
             fi
           done
 
@@ -150,6 +195,13 @@ jobs:
           python3 "$TRUSTED_POLICY" --root "$GITHUB_WORKSPACE"
           python3 "$TRUSTED_POLICY" --check --root "$GITHUB_WORKSPACE"
           git add -- configs/a14 configs/a15 configs/a16
+
+          # The parent validator assumes one AK3 revision.  This fork deliberately
+          # keeps the pinned WildKernels AK3 for 158 devices and the guarded suite
+          # installer for OP15, so restore the trusted validator after every merge.
+          rm -f -- .github/scripts/validate_configs.py
+          cp -- "$TRUSTED_VALIDATOR" .github/scripts/validate_configs.py
+          git add -- .github/scripts/validate_configs.py
 
           if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
             echo "::error::Unresolved conflicts remain after applying the allowlist"
@@ -163,12 +215,21 @@ jobs:
             echo "::error::The merge changed the fork's trusted AK3 sanitizer"
             exit 1
           fi
+          if ! cmp --silent "$TRUSTED_RESOLVER" .github/scripts/resolve_sync_conflict.py; then
+            echo "::error::The merge changed the fork's trusted conflict resolver"
+            exit 1
+          fi
+          if ! cmp --silent "$TRUSTED_VALIDATOR" .github/scripts/validate_configs.py; then
+            echo "::error::The merge changed the fork's trusted config validator"
+            exit 1
+          fi
 
       - name: Validate merged files and local compatibility contracts
         if: steps.refs.outputs.needs_sync == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          python3 .github/scripts/validate_configs.py
           python3 - <<'PY'
           import json
           import sys
@@ -265,12 +326,38 @@ jobs:
               "Failed to audit AnyKernel3 installer scripts",
               "Failed to audit AnyKernel3 update-binary",
               "refusing to package an interactive installer",
+              "Build susfs_guard_lkm.ko",
+              "Applying per-socket ctx ownership patch",
           )
           for marker in required_action_markers:
               if marker not in action:
                   errors.append(f"missing local build compatibility marker: {marker}")
+
+          def input_default(text, name, indent):
+              lines = text.splitlines()
+              marker = " " * indent + name + ":"
+              try:
+                  start = lines.index(marker)
+              except ValueError:
+                  return None
+              child_indent = " " * (indent + 2)
+              for line in lines[start + 1:]:
+                  if line.startswith(" " * indent) and not line.startswith(child_indent):
+                      break
+                  if line.startswith(child_indent + "default:"):
+                      return line.split(":", 1)[1].strip()
+              return None
+
           if "A14+15+16" not in build_workflow:
               errors.append("build workflow no longer exposes the A14+15+16 target")
+          if build_workflow.count("susfs_lkm_ref:") < 2:
+              errors.append("build workflow does not expose and forward susfs_lkm_ref")
+          if input_default(build_workflow, "susfs_lkm_ref", 6) not in {"''", '\"\"'}:
+              errors.append("susfs_lkm_ref must default to empty for in-tree SUSFS builds")
+          if input_default(action, "susfs_lkm_ref", 2) not in {"''", '\"\"'}:
+              errors.append("the composite action must keep susfs_lkm_ref disabled by default")
+          if build_workflow.count("nomount_ref:") < 2:
+              errors.append("build workflow does not expose and forward nomount_ref")
 
           step_marker = "- name: Create Kernel ZIP"
           sanitizer_call = 'python3 "$GITHUB_ACTION_PATH/../../scripts/sanitize_anykernel.py" "$PWD"'
@@ -288,8 +375,8 @@ jobs:
               if not (
                   step_at
                   < sanitizer_at
-                  < syntax_at
                   < volume_at
+                  < syntax_at
                   < refusal_at
                   < exit_at
                   < zip_at
@@ -310,6 +397,14 @@ jobs:
           sanitizer_path = root / ".github/scripts/sanitize_anykernel.py"
           if not sanitizer_path.is_file() or sanitizer_path.stat().st_size == 0:
               errors.append("AnyKernel3 non-interactive sanitizer is missing or empty")
+
+          resolver_path = root / ".github/scripts/resolve_sync_conflict.py"
+          if not resolver_path.is_file() or resolver_path.stat().st_size == 0:
+              errors.append("trusted sync conflict resolver is missing or empty")
+
+          validator_path = root / ".github/scripts/validate_configs.py"
+          if not validator_path.is_file() or validator_path.stat().st_size == 0:
+              errors.append("trusted config validator is missing or empty")
 
           if errors:
               for error in errors:

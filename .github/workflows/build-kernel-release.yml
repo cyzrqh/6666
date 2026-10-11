@@ -79,6 +79,16 @@ on:
         required: false
         type: boolean
         default: false
+      susfs_lkm_ref:
+        description: 'Optional susfs4ksu-lkm branch/tag/SHA. Leave empty because this fork already enables in-tree SUSFS.'
+        required: false
+        type: string
+        default: ''
+      nomount_ref:
+        description: 'Optional NoMount-Suite source ref; unused while the enforced NMS policy is disabled.'
+        required: false
+        type: string
+        default: main
       patches_ref:
         description: 'kernel_patches branch/ref for optional performance and compatibility patches'
         required: false
@@ -551,6 +561,8 @@ jobs:
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
           enable_adios: ${{ inputs.enable_adios }}
+          susfs_lkm_ref: ${{ inputs.susfs_lkm_ref }}
+          nomount_ref: ${{ inputs.nomount_ref }}
           patches_ref: ${{ inputs.patches_ref }}
           clean: ${{ inputs.clean_build }}
           debug: ${{ inputs.debug }}
