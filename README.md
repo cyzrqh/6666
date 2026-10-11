@@ -53,7 +53,7 @@ The release target, device model, kernel version and source branch must all matc
 
 ---
 
-## 🚀 Installation
+## Installation
 
 **Prerequisites:** an unlocked bootloader, a backed-up stock `boot.img`, and [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher/releases) or another compatible kernel flashing tool.
 
@@ -66,7 +66,7 @@ The standard kernel ZIP already contains SukiSU, KPM and SUSFS support. NoMount/
 
 ---
 
-## 🔄 Updating &amp; removing
+## Updating and removing
 
 - **Update** — flash a newer ZIP that still matches the same device, target release and kernel base.
 - **After a major OTA** — do not reuse the previous kernel ZIP; wait for and flash a matching A14, A15 or A16 build.
@@ -74,7 +74,7 @@ The standard kernel ZIP already contains SukiSU, KPM and SUSFS support. NoMount/
 
 ---
 
-## ❓ FAQ
+## FAQ
 
 **Can I choose KPM, SUSFS, NoMount/NMS or BBG with the volume keys while flashing?** No. AK3 is non-interactive and contains no volume-key feature selector. KPM and SUSFS are already enabled in the standard image; NoMount/NMS and BBG are not.
 
@@ -84,7 +84,7 @@ The standard kernel ZIP already contains SukiSU, KPM and SUSFS support. NoMount/
 
 ---
 
-## 🛠️ Building it yourself
+## Building it yourself
 
 Via GitHub Actions:
 
@@ -142,26 +142,27 @@ Optionally, a repository owner can enable **Settings → Actions → General →
 
 ---
 
-## 💝 Donations
+## Donations
 
-Any and all donations are appreciated!
+Appreciated, never expected.
 
 - PayPal: [paypal.me/fatalcoder524](https://paypal.me/fatalcoder524)
 - DM on Telegram for UPI donations!
 
-## 🤝 Acknowledgments
+## Acknowledgments
 
 - **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors — optional NoMount integration (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
 - **SukiSU Ultra** — the root solution
 - **AnyKernel3** by osm0sis and contributors
 - **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)** — the excellent OnePlus build framework this is forked from
+- **[inforcqb/susfs4ksu-lkm](https://github.com/inforcqb/susfs4ksu-lkm)** — SUSFS as a loadable module, which is what each kernel here carries
 - **OnePlusOSS** — kernel source
 - Community testers and contributors
 ---
 
-## 📄 License
+## License
 
-[GPL-2.0](LICENSE) — the same license as the Linux kernel this builds.
+[GPL-2.0](LICENSE), the same license as the kernel this builds.
 
 Kernel source comes from **OnePlusOSS** (GPL-2.0); the build framework is forked from
 **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)**.
