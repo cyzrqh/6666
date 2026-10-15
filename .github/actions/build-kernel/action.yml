@@ -362,6 +362,40 @@ runs:
         fi
         echo "::endgroup::"
 
+    - name: Normalize Source Refs
+      shell: bash
+      env:
+        PATCHES_REF_INPUT: ${{ inputs.patches_ref }}
+        NOMOUNT_REF_INPUT: ${{ inputs.nomount_ref }}
+      run: |
+        set -euo pipefail
+
+        normalize_main_ref() {
+          case "$1" in
+            ""|main|Main|MAIN|主要的|主分支)
+              printf '%s\n' main
+              ;;
+            *)
+              printf '%s\n' "$1"
+              ;;
+          esac
+        }
+
+        patches_ref="$(normalize_main_ref "$PATCHES_REF_INPUT")"
+        nomount_ref="$(normalize_main_ref "$NOMOUNT_REF_INPUT")"
+
+        if [ -n "$PATCHES_REF_INPUT" ] && [ "$patches_ref" != "$PATCHES_REF_INPUT" ]; then
+          echo "::warning title=已修正 kernel_patches 分支::'$PATCHES_REF_INPUT' 已规范为 '$patches_ref'。"
+        fi
+        if [ -n "$NOMOUNT_REF_INPUT" ] && [ "$nomount_ref" != "$NOMOUNT_REF_INPUT" ]; then
+          echo "::warning title=已修正 NoMount 分支::'$NOMOUNT_REF_INPUT' 已规范为 '$nomount_ref'。"
+        fi
+
+        {
+          echo "NORMALIZED_PATCHES_REF=$patches_ref"
+          echo "NORMALIZED_NOMOUNT_REF=$nomount_ref"
+        } >> "$GITHUB_ENV"
+
     - name: Setup Base Environment
       shell: bash
       run: |
@@ -860,9 +894,8 @@ runs:
         }
         
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
-        _pref="${{ inputs.patches_ref }}"
-        retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "${_pref:-main}" "1" "bouton_kernel_patches"
-        echo "kernel_patches ref: ${_pref:-main}"
+        retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "$NORMALIZED_PATCHES_REF" "1" "bouton_kernel_patches"
+        echo "kernel_patches ref: $NORMALIZED_PATCHES_REF"
 
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           SUSFS_REF="${{ inputs.susfs_commit_hash_or_branch }}"
@@ -1351,9 +1384,9 @@ runs:
     - name: Apply NoMount (hookless) Patch
       if: ${{ env.OP_NMS == 'true' }}
       shell: bash
-      env:
-        NOMOUNT_REF: ${{ inputs.nomount_ref }}
       run: |
+        set -euo pipefail
+        export NOMOUNT_REF="$NORMALIZED_NOMOUNT_REF"
         bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" hookless
 
     - name: Record NoMount Version

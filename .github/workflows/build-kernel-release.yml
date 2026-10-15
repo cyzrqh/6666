@@ -85,15 +85,15 @@ on:
         type: string
         default: ''
       nomount_ref:
-        description: 'Optional NoMount-Suite source ref; unused while the enforced NMS policy is disabled.'
+        description: 'Optional NoMount-Suite source ref. Leave empty to use main.'
         required: false
         type: string
-        default: main
+        default: ''
       patches_ref:
-        description: 'kernel_patches branch/ref for optional performance and compatibility patches'
+        description: 'Optional kernel_patches branch/ref. Leave empty to use main.'
         required: false
         type: string
-        default: main
+        default: ''
 
 jobs:
   set-op-model:
