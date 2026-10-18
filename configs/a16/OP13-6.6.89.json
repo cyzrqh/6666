@@ -17,6 +17,7 @@
   "susfs": true,
   "kpm": true,
   "NMS": false,
+  "stock_config": true,
   "opt": false,
   "ds": false,
   "bbg": false,

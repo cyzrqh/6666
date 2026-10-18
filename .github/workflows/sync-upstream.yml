@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: sync-upstream-nomount
@@ -17,7 +16,7 @@ env:
 
 jobs:
   sync:
-    name: Merge upstream into a pull request
+    name: Merge upstream into NoMount
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -85,14 +84,9 @@ jobs:
             "refs/heads/${BASE_BRANCH}:refs/remotes/upstream/${BASE_BRANCH}"
           upstream_sha="$(git rev-parse "refs/remotes/upstream/${BASE_BRANCH}^{commit}")"
 
-          # Both immutable inputs are part of the name, so repeated runs select
-          # exactly the same branch without rewriting it.
-          sync_branch="sync/upstream-nomount/${base_sha}/${upstream_sha}"
-
           {
             echo "base_sha=$base_sha"
             echo "upstream_sha=$upstream_sha"
-            echo "sync_branch=$sync_branch"
             echo "trusted_policy=$trusted_policy"
             echo "policy_sha=$policy_sha"
             echo "trusted_sanitizer=$trusted_sanitizer"
@@ -115,7 +109,6 @@ jobs:
         env:
           BASE_SHA: ${{ steps.refs.outputs.base_sha }}
           UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
-          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
           TRUSTED_POLICY: ${{ steps.refs.outputs.trusted_policy }}
           POLICY_SHA: ${{ steps.refs.outputs.policy_sha }}
           TRUSTED_SANITIZER: ${{ steps.refs.outputs.trusted_sanitizer }}
@@ -129,7 +122,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch --create "$SYNC_BRANCH" "$BASE_SHA"
+          git switch --detach "$BASE_SHA"
 
           set +e
           git merge --no-ff --no-commit "$UPSTREAM_SHA"
@@ -149,6 +142,7 @@ jobs:
           disallowed=()
           for path in "${conflicts[@]}"; do
             if [[ "$path" =~ ^configs/a(14|15|16)/[^/]+\.json$ ]] || \
+               [[ "$path" =~ ^manifests/a(14|15|16)/[^/]+\.xml$ ]] || \
                [ "$path" = ".github/workflows/build-kernel-release.yml" ] || \
                [ "$path" = ".github/scripts/validate_configs.py" ] || \
                [ "$path" = "README.md" ]; then
@@ -183,6 +177,7 @@ jobs:
             else
               # Regenerate diff3 markers so the trusted resolver can tell a true
               # upstream addition from a local deletion that upstream modified.
+              # Conflicted manifests keep the fork's reviewed AnyKernel source.
               git checkout --conflict=diff3 -- "$path"
               python3 "$TRUSTED_RESOLVER" --root "$GITHUB_WORKSPACE" "$path"
               git add -- "$path"
@@ -423,12 +418,11 @@ jobs:
             exit 1
           fi
 
-      - name: Commit and publish the sync branch
+      - name: Commit and update NoMount
         if: steps.refs.outputs.needs_sync == 'true'
         env:
           BASE_SHA: ${{ steps.refs.outputs.base_sha }}
           UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
-          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -443,85 +437,12 @@ jobs:
             exit 1
           fi
 
-          remote_line="$(git ls-remote --heads origin "refs/heads/$SYNC_BRANCH")"
-          if [ -n "$remote_line" ]; then
-            git fetch --no-tags origin \
-              "refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH"
-            remote_ref="refs/remotes/origin/$SYNC_BRANCH"
-            if ! git merge-base --is-ancestor "$BASE_SHA" "$remote_ref" || \
-               ! git merge-base --is-ancestor "$UPSTREAM_SHA" "$remote_ref"; then
-              echo "::error::Existing deterministic sync branch has unexpected ancestry"
-              exit 1
-            fi
-            if ! git diff --quiet "$remote_ref" HEAD; then
-              echo "::error::Existing deterministic sync branch has unexpected content"
-              exit 1
-            fi
-            echo "Equivalent sync branch already exists; leaving it unchanged"
-          else
-            git push --set-upstream origin "HEAD:refs/heads/$SYNC_BRANCH"
-          fi
-
-      - name: Create or reuse the pull request
-        if: steps.refs.outputs.needs_sync == 'true'
-        env:
-          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
-          UPSTREAM_SHA: ${{ steps.refs.outputs.upstream_sha }}
-          SYNC_BRANCH: ${{ steps.refs.outputs.sync_branch }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Recheck the protected branch after publishing the separate sync ref.
-          git fetch --no-tags origin \
-            "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
-          if [ "$(git rev-parse "refs/remotes/origin/${BASE_BRANCH}^{commit}")" != "$BASE_SHA" ]; then
-            echo "::error::origin/${BASE_BRANCH} changed before PR creation; rerun to build a fresh deterministic branch"
-            exit 1
-          fi
-
-          pr_url="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --base "$BASE_BRANCH" \
-            --head "$SYNC_BRANCH" \
-            --json url \
-            --jq '.[0].url // empty')"
-
-          if [ -z "$pr_url" ]; then
-            body="$(printf '%s\n' \
-              "Automated merge of \`${UPSTREAM_REPOSITORY}:${BASE_BRANCH}\`." \
-              "" \
-              "- Base: \`${BASE_SHA}\`" \
-              "- Upstream: \`${UPSTREAM_SHA}\`" \
-              "- Local A14/A15/A16 policy and compatibility contracts were checked before publishing.")"
-            if ! pr_url="$(gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base "$BASE_BRANCH" \
-              --head "$SYNC_BRANCH" \
-              --title "sync: upstream NoMount ${UPSTREAM_SHA:0:12}" \
-              --body "$body")"; then
-              # A concurrent/manual creator may have won the race.
-              pr_url="$(gh pr list \
-                --repo "$GITHUB_REPOSITORY" \
-                --state open \
-                --base "$BASE_BRANCH" \
-                --head "$SYNC_BRANCH" \
-                --json url \
-                --jq '.[0].url // empty')"
-              if [ -z "$pr_url" ]; then
-                compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${SYNC_BRANCH}?expand=1"
-                message="The synchronized branch is ready, but repository policy blocked automatic pull-request creation. Open the link in the job summary and select Create pull request."
-                echo "::warning::$message"
-                printf '### Upstream sync branch ready\n\n%s\n\n[Create the pull request](%s)\n' \
-                  "$message" "$compare_url" >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-            fi
-          fi
-
-          echo "Pull request: $pr_url"
-          printf '### Upstream sync\n\n%s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+          # This is a normal fast-forward of the protected base to a merge commit.
+          # A concurrent update is rejected by git, so no history is overwritten.
+          git push origin "HEAD:refs/heads/${BASE_BRANCH}"
+          sync_sha="$(git rev-parse HEAD)"
+          printf '### Upstream sync complete\n\nUpdated `%s` to `%s` and included upstream `%s`.\n' \
+            "$BASE_BRANCH" "$sync_sha" "$UPSTREAM_SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report an already synchronized base
         if: steps.refs.outputs.needs_sync == 'false'

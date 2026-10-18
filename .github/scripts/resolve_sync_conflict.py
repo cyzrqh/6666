@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -11,6 +12,9 @@ ALLOWED_PATHS = {
     ".github/workflows/build-kernel-release.yml",
     "README.md",
 }
+ALLOWED_PATTERNS = (
+    re.compile(r"manifests/a(?:14|15|16)/[^/]+\.xml"),
+)
 START = "<<<<<<< "
 BASE = "||||||| "
 MIDDLE = "======="
@@ -93,7 +97,9 @@ def main() -> int:
     pending: list[tuple[Path, str, int, int]] = []
     for raw_path in args.paths:
         rel = Path(raw_path).as_posix()
-        if rel not in ALLOWED_PATHS:
+        if rel not in ALLOWED_PATHS and not any(
+            pattern.fullmatch(rel) for pattern in ALLOWED_PATTERNS
+        ):
             raise SystemExit(f"refusing unapproved conflict path: {rel}")
         path = root / rel
         if path.is_symlink() or not path.is_file():
