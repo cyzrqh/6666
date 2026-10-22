@@ -1443,6 +1443,14 @@ runs:
         echo "✅ SUSFS patches applied"
         echo "::endgroup::"
 
+    - name: Match SukiSU sucompat static key to SUSFS callers
+      if: ${{ inputs.ksu_type == 'SUKISU' && env.OP_SUSFS == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "fix-sukisu-static-key" > "$GITHUB_WORKSPACE/.build-phase"
+        python3 "$GITHUB_ACTION_PATH/../../scripts/fix_sukisu_static_key.py" "$KSU_FOLDER"
+
     - name: Apply NoMount (hookless) Patch
       if: ${{ env.OP_NMS == 'true' }}
       shell: bash

@@ -6,12 +6,18 @@ on:
       - 'configs/**'
       - 'manifests/**'
       - '.github/scripts/validate_configs.py'
+      - '.github/scripts/fix_sukisu_static_key.py'
+      - '.github/scripts/tests/test_sukisu_static_key.py'
+      - '.github/actions/build-kernel/action.yml'
       - '.github/workflows/validate-configs.yml'
   pull_request:
     paths:
       - 'configs/**'
       - 'manifests/**'
       - '.github/scripts/validate_configs.py'
+      - '.github/scripts/fix_sukisu_static_key.py'
+      - '.github/scripts/tests/test_sukisu_static_key.py'
+      - '.github/actions/build-kernel/action.yml'
       - '.github/workflows/validate-configs.yml'
   workflow_dispatch:
 
@@ -33,3 +39,8 @@ jobs:
 
       - name: Validate configs and manifests
         run: python3 .github/scripts/validate_configs.py
+
+      - name: Test SukiSU static-key compatibility
+        run: |
+          command -v cc
+          python3 -m unittest discover -s .github/scripts/tests -p test_sukisu_static_key.py -v
