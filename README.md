@@ -119,17 +119,27 @@ These values are baked into the kernel image. The generated AK3 ZIP does not ask
 
 ## 🔄 Syncing updates from the parent repository
 
+### 手动同步上游（保留定制功能）
+
+打开 [同步上游工作流](https://github.com/cyzrqh/6666/actions/workflows/sync-upstream.yml)，点击 **Run workflow**，选择 **NoMount** 分支，再点绿色的 **Run workflow**。
+
+运行成功后，流程会直接更新 `NoMount`，不需要创建或合并 PR，也不需要额外填写 Token。重新打开仓库主页即可查看同步结果；重复运行时，如果没有新提交，会显示已经同步。
+
+同步时保留本仓库的 KPM/SUSFS 默认开启、BBG/NoMount 默认关闭，以及 AK3 无音量键选择的刷写行为。上游文件使用 LF 或 CRLF 换行都可以；真实的未解决代码冲突和验证错误仍会停止发布，不会用“成功”掩盖失败。
+
+**仓库主页的 Sync fork 是 GitHub 自带功能，不会调用本工作流的冲突处理。** 当上游和本仓库修改了相同内容时，它仍可能提示冲突；这不是权限不足。保留这些定制功能时，请使用上面的手动入口，不要点击 **Discard commits**，那会丢弃本仓库改动。
+
 Use the guarded manual workflow:
 
 ```text
 Actions → Sync upstream NoMount → Run workflow
 ```
 
-After the run succeeds, open the pull request shown in its summary, review the checks, and merge it. If repository policy blocks automatic pull-request creation, the same summary shows a **Create the pull request** link; open it and select **Create pull request**. The workflow never pushes upstream changes directly to `NoMount`.
+After validation succeeds, the workflow directly fast-forwards `NoMount` to a merge commit containing both histories. No pull request, extra token, force push, or repository permission change is required. A concurrent branch update is rejected; rerun against the new base.
 
 Ordinary A14/A15/A16 configuration conflicts are normalized back to this fork's standard KPM/SUSFS/BBG/NoMount policy. Known overlaps in the build workflow and README keep this fork's reviewed behavior while accepting upstream-only additions. Any conflict outside that narrow allowlist stops the sync and lists the affected files, so local compatibility and non-interactive AK3 protections are not silently overwritten.
 
-Optionally, a repository owner can enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** to remove that final click. The safer default works without changing this repository-wide permission.
+The native GitHub **Sync fork** button cannot resolve genuine conflicts or run this workflow's policy. Use this workflow for customized builds. Do not discard the fork's commits to make the button available.
 
 ---
 

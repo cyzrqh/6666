@@ -225,6 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/validate_configs.py
+          python3 -B -m unittest discover -s .github/scripts/tests -p test_sync_upstream.py -v
           python3 - <<'PY'
           import json
           import sys
@@ -408,7 +409,10 @@ jobs:
           print(f"validated {sum(1 for _ in (root / 'configs').glob('a1[456]/*.json'))} configs and {len(xml_paths)} manifests")
           PY
 
-          git diff --cached --check
+          # Upstream can commit CRLF manifests. A CR before LF is a line ending,
+          # not trailing whitespace; still reject real trailing spaces and stray
+          # conflict markers instead of blocking an otherwise valid sync.
+          git -c core.whitespace=cr-at-eol diff --cached --check
           if ! git rev-parse --verify --quiet MERGE_HEAD >/dev/null; then
             echo "::error::Expected an uncommitted merge before creating the sync commit"
             exit 1

@@ -8,7 +8,9 @@ on:
       - '.github/scripts/validate_configs.py'
       - '.github/scripts/fix_sukisu_static_key.py'
       - '.github/scripts/tests/test_sukisu_static_key.py'
+      - '.github/scripts/tests/test_sync_upstream.py'
       - '.github/actions/build-kernel/action.yml'
+      - '.github/workflows/sync-upstream.yml'
       - '.github/workflows/validate-configs.yml'
   pull_request:
     paths:
@@ -17,7 +19,9 @@ on:
       - '.github/scripts/validate_configs.py'
       - '.github/scripts/fix_sukisu_static_key.py'
       - '.github/scripts/tests/test_sukisu_static_key.py'
+      - '.github/scripts/tests/test_sync_upstream.py'
       - '.github/actions/build-kernel/action.yml'
+      - '.github/workflows/sync-upstream.yml'
       - '.github/workflows/validate-configs.yml'
   workflow_dispatch:
 
@@ -44,3 +48,6 @@ jobs:
         run: |
           command -v cc
           python3 -m unittest discover -s .github/scripts/tests -p test_sukisu_static_key.py -v
+
+      - name: Test upstream sync with real Git merges
+        run: python3 -m unittest discover -s .github/scripts/tests -p test_sync_upstream.py -v
