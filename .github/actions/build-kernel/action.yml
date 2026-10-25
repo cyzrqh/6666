@@ -1268,8 +1268,18 @@ runs:
               perl -0777 -i -pe 's{^static void inotify_fdinfo\(struct seq_file \*m, struct fsnotify_mark \*mark\)$}{static inline u32 inotify_mark_user_mask(struct fsnotify_mark *mark)\n{\n\treturn mark->mask \& IN_ALL_EVENTS;\n}\n\n$&}m' fs/notify/fdinfo.c
             fi
             if [ "$sublevel" -ge 197 ]; then
-              sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
-              sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
+              # Vendor trees with the same sublevel do not share all GKI hooks.
+              # Remember the original includes instead of adding missing headers.
+              restore_trace_blk=false
+              restore_trace_mm=false
+              if grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+                restore_trace_blk=true
+                sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+              fi
+              if grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
+                restore_trace_mm=true
+                sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
+              fi
             fi
             ;;
           android14-6.1)
@@ -1388,10 +1398,10 @@ runs:
               sed -i 's|i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val|i_uid_into_mnt(\&init_user_ns, \&fi->inode).val|g' fs/susfs.c
               sed -i 's|i_uid_into_mnt(i_user_ns(inode), inode).val|i_uid_into_mnt(\&init_user_ns, inode).val|g' fs/susfs.c
             fi
-            if [ "$sublevel" -ge 197 ]; then
+            if [ "$sublevel" -ge 197 ] && [ "$restore_trace_blk" = true ]; then
               grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
             fi
-            if [ "$sublevel" -ge 206 ]; then
+            if [ "$sublevel" -ge 197 ] && [ "$restore_trace_mm" = true ]; then
               grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c || sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
             fi
             [ "$sublevel" -le 148 ] && sed -i 's/goto show_pad;/return 0;/' fs/proc/task_mmu.c
