@@ -9,6 +9,8 @@ on:
       - '.github/scripts/fix_sukisu_static_key.py'
       - '.github/scripts/tests/test_sukisu_static_key.py'
       - '.github/scripts/tests/test_susfs_vendor_hooks.py'
+      - '.github/scripts/fix_oplus_nfc_dependency.py'
+      - '.github/scripts/tests/test_oplus_nfc_dependency.py'
       - '.github/scripts/tests/test_sync_upstream.py'
       - '.github/actions/build-kernel/action.yml'
       - '.github/workflows/sync-upstream.yml'
@@ -21,6 +23,8 @@ on:
       - '.github/scripts/fix_sukisu_static_key.py'
       - '.github/scripts/tests/test_sukisu_static_key.py'
       - '.github/scripts/tests/test_susfs_vendor_hooks.py'
+      - '.github/scripts/fix_oplus_nfc_dependency.py'
+      - '.github/scripts/tests/test_oplus_nfc_dependency.py'
       - '.github/scripts/tests/test_sync_upstream.py'
       - '.github/actions/build-kernel/action.yml'
       - '.github/workflows/sync-upstream.yml'
@@ -56,3 +60,6 @@ jobs:
 
       - name: Test SUSFS vendor-hook include compatibility
         run: python3 -m unittest discover -s .github/scripts/tests -p test_susfs_vendor_hooks.py -v
+
+      - name: Test Oplus NFC project dependency repair
+        run: python3 -m unittest discover -s .github/scripts/tests -p test_oplus_nfc_dependency.py -v

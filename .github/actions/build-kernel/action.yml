@@ -2405,7 +2405,20 @@ runs:
         ccache -s | head -n 20
         echo "============================================"
         
+        # The mt6835 N6X drop defaults OPLUS_NFC to built-in while its project
+        # service defaults off. Express the real dependency rather than forcing
+        # old vendor implementations into GKI or inventing project-ID stubs.
+        if [ "$OP_BRANCH" = "wild/mt6835" ]; then
+          python3 "$GITHUB_ACTION_PATH/../../scripts/fix_oplus_nfc_dependency.py" "$COMMON_KERNEL_FOLDER"
+        fi
+
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" gki_defconfig
+
+        if [ "$OP_BRANCH" = "wild/mt6835" ] && [ -f drivers/nfc/oplus_nfc/Kconfig ]; then
+          KCONFIG_CONF="$COMMON_KERNEL_FOLDER/$OUT/scripts/kconfig/conf" \
+          NFC_KCONFIG="$COMMON_KERNEL_FOLDER/drivers/nfc/oplus_nfc/Kconfig" \
+            python3 "$GITHUB_ACTION_PATH/../../scripts/tests/test_oplus_nfc_dependency.py" -v
+        fi
         
         LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-WILD}"
         if [ -n "${LOCAL_LOCALVERSION:-}" ]; then
